@@ -1,0 +1,303 @@
+-- Load Orion Library
+local OrionLib = loadstring(game:HttpGet(('https://raw.githubusercontent.com/shlexware/Orion/main/source')))()
+
+-- Create Window
+local Window = OrionLib:MakeWindow({
+    Name = "DaHood Gooner",
+    HidePremium = false,
+    SaveConfig = true,
+    ConfigFolder = "DaHoodGoonerConfig"
+})
+
+-- Scripts
+local aimlockScript = [[
+-- Your Aimlock script here
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+
+local player = Players.LocalPlayer
+local character = player.Character or player.CharacterAdded:Wait()
+local humanoid = character:WaitForChild("Humanoid")
+local rootPart = character:WaitForChild("HumanoidRootPart")
+local camera = workspace.CurrentCamera
+local mouse = player:GetMouse()
+
+-- Configuration
+local TPWALK_KEY = Enum.KeyCode.C
+local PLAYER_LOCK_KEY = Enum.KeyCode.V
+local AIMLOCK_KEY = Enum.KeyCode.E
+local FLY_SPIN_KEY = Enum.KeyCode.B
+local TPWALK_DISTANCE = 1
+local TPWALK_FREQUENCY = 0.01
+local AIMLOCK_SMOOTHNESS = 0.5
+local MAX_AIMLOCK_DISTANCE = 1000
+local MAX_ANGLE_DIFFERENCE = math.rad(30)
+local PREDICTION_MULTIPLIER = 0.1
+local FLY_HEIGHT = 20
+local SPIN_SPEED = 5
+
+-- State variables
+local isTpWalkActive = false
+local isPlayerLockActive = false
+local isAimlockActive = false
+local isFlySpinActive = false
+local lastTeleportTime = 0
+local lockedPlayer = nil
+local aimlockTarget = nil
+local isSpaceBarHeld = false
+local ascendSpeed = 0.5
+
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if input.KeyCode == Enum.KeyCode.Space then
+        isSpaceBarHeld = true
+    end
+end)
+
+UserInputService.InputEnded:Connect(function(input, gameProcessed)
+    if input.KeyCode == Enum.KeyCode.Space then
+        isSpaceBarHeld = false
+    end
+end)
+
+RunService.RenderStepped:Connect(function(delta)
+    if isSpaceBarHeld then
+        local rootPart = character:FindFirstChild("HumanoidRootPart")
+        if rootPart then
+            rootPart.Velocity = Vector3.new(rootPart.Velocity.X, ascendSpeed * 100, rootPart.Velocity.Z)
+        end
+    end
+end)
+
+-- Reconnect the script if the character is reset
+player.CharacterAdded:Connect(function(newCharacter)
+    character = newCharacter
+    humanoid = character:WaitForChild("Humanoid")
+end)
+
+local function getPlayerClosestToMouse()
+    local closestPlayer = nil
+    local closestAngle = MAX_ANGLE_DIFFERENCE
+    local cameraPosition = camera.CFrame.Position
+    local mouseRay = mouse.UnitRay
+    for _, otherPlayer in pairs(Players:GetPlayers()) do
+        if otherPlayer ~= player and otherPlayer.Character and otherPlayer.Character:FindFirstChild("HumanoidRootPart") then
+            local targetPosition = otherPlayer.Character.HumanoidRootPart.Position
+            local targetVector = (targetPosition - cameraPosition).Unit
+            local angle = math.acos(mouseRay.Direction:Dot(targetVector))
+            if angle < closestAngle and (targetPosition - cameraPosition).Magnitude <= MAX_AIMLOCK_DISTANCE then
+                closestAngle = angle
+                closestPlayer = otherPlayer
+            end
+        end
+    end
+    return closestPlayer
+end
+
+local function predictTargetPosition(targetPlayer)
+    if not targetPlayer or not targetPlayer.Character or not targetPlayer.Character:FindFirstChild("HumanoidRootPart") then
+        return nil
+    end
+    local targetRoot = targetPlayer.Character.HumanoidRootPart
+    local targetVelocity = targetRoot.Velocity
+    local targetPosition = targetRoot.Position
+    local predictedPosition = targetPosition + (targetVelocity * PREDICTION_MULTIPLIER)
+    return predictedPosition
+end
+
+local function performTpWalk()
+    if not isTpWalkActive or not character:IsDescendantOf(workspace) then return end
+    local currentTime = tick()
+    if currentTime - lastTeleportTime < TPWALK_FREQUENCY then return end
+    lastTeleportTime = currentTime
+    local moveDirection = humanoid.MoveDirection
+    if moveDirection.Magnitude > 0 then
+        local targetPosition = rootPart.Position + moveDirection * TPWALK_DISTANCE
+        local raycastParams = RaycastParams.new()
+        raycastParams.FilterDescendantsInstances = {character}
+        raycastParams.FilterType = Enum.RaycastFilterType.Blacklist
+        local raycastResult = workspace:Raycast(rootPart.Position, moveDirection * TPWALK_DISTANCE, raycastParams)
+        if raycastResult then
+            targetPosition = raycastResult.Position
+        end
+        rootPart.CFrame = CFrame.new(targetPosition, targetPosition + rootPart.CFrame.LookVector)
+    end
+end
+
+local function updatePlayerLock()
+    if not isPlayerLockActive then
+        lockedPlayer = nil
+        return
+    end
+    if not lockedPlayer or not lockedPlayer.Character or not lockedPlayer.Character:FindFirstChild("HumanoidRootPart") then
+        lockedPlayer = getPlayerClosestToMouse()
+    end
+    if lockedPlayer then
+        local predictedPosition = predictTargetPosition(lockedPlayer)
+        if predictedPosition then
+            local characterPosition = rootPart.Position
+            local direction = (predictedPosition - characterPosition).Unit
+            local newCFrame = CFrame.new(
+                characterPosition,
+                Vector3.new(characterPosition.X + direction.X, characterPosition.Y, characterPosition.Z + direction.Z)
+            )
+            rootPart.CFrame = rootPart.CFrame:Lerp(newCFrame, 0.1)
+        end
+    end
+end
+
+local function updateAimlock()
+    if not isAimlockActive then
+        aimlockTarget = nil
+        return
+    end
+    if not aimlockTarget or not aimlockTarget.Character or not aimlockTarget.Character:FindFirstChild("HumanoidRootPart") then
+        aimlockTarget = getPlayerClosestToMouse()
+    end
+    if aimlockTarget then
+        local predictedPosition = predictTargetPosition(aimlockTarget)
+        if predictedPosition then
+            local cameraPos = camera.CFrame.Position
+            local newCFrame = CFrame.new(cameraPos, predictedPosition)
+            camera.CFrame = camera.CFrame:Lerp(newCFrame, AIMLOCK_SMOOTHNESS)
+        end
+    end
+end
+
+local function performFlySpin()
+    if not isFlySpinActive then return end
+    
+    if not aimlockTarget or not aimlockTarget.Character then
+        print("No aimlockTarget found")
+        return
+    end
+    
+    local targetRoot = aimlockTarget.Character:FindFirstChild("HumanoidRootPart")
+    local targetHumanoid = aimlockTarget.Character:FindFirstChild("Humanoid")
+    
+    if not targetRoot or not targetHumanoid then
+        print("Target's RootPart or Humanoid not found")
+        return
+    end
+    
+    -- Check if target's health is 0 or below
+    if targetHumanoid.Health <= 0 then
+        print("Target's health is 0 or below. Stopping fly spin and lock.")
+        isFlySpinActive = false
+        isAimlockActive = false
+        aimlockTarget = nil
+        humanoid.PlatformStand = false
+        return
+    end
+    
+    local targetPosition = targetRoot.Position + Vector3.new(0, FLY_HEIGHT, 0)
+    local angle = tick() * SPIN_SPEED
+    local offset = Vector3.new(math.cos(angle) * 5, 0, math.sin(angle) * 5)
+    
+    rootPart.CFrame = CFrame.new(targetPosition + offset, targetPosition)
+    humanoid.PlatformStand = true
+end
+
+local function onInputBegan(input, gameProcessed)
+    if gameProcessed then return end
+    if input.KeyCode == TPWALK_KEY then
+        isTpWalkActive = true
+    elseif input.KeyCode == PLAYER_LOCK_KEY then
+        isPlayerLockActive = true
+        lockedPlayer = getPlayerClosestToMouse()
+    elseif input.KeyCode == AIMLOCK_KEY then
+        isAimlockActive = not isAimlockActive
+        if isAimlockActive then
+            aimlockTarget = getPlayerClosestToMouse()
+        else
+            aimlockTarget = nil
+        end
+    elseif input.KeyCode == FLY_SPIN_KEY then
+        isFlySpinActive = not isFlySpinActive
+        print("Fly Spin Toggled:", isFlySpinActive)
+        if not isFlySpinActive then
+            humanoid.PlatformStand = false
+        end
+    end
+end
+
+local function onInputEnded(input, gameProcessed)
+    if gameProcessed then return end
+    if input.KeyCode == TPWALK_KEY then
+        isTpWalkActive = false
+    elseif input.KeyCode == PLAYER_LOCK_KEY then
+        isPlayerLockActive = false
+        lockedPlayer = nil
+    end
+end
+
+-- Connect events
+UserInputService.InputBegan:Connect(onInputBegan)
+UserInputService.InputEnded:Connect(onInputEnded)
+
+RunService.Heartbeat:Connect(function()
+    performTpWalk()
+    updatePlayerLock()
+    updateAimlock()
+    performFlySpin()
+end)
+
+-- Handle character respawning
+local function setupCharacter(newCharacter)
+    character = newCharacter
+    humanoid = character:WaitForChild("Humanoid")
+    rootPart = character:WaitForChild("HumanoidRootPart")
+end
+
+setupCharacter(player.Character or player.CharacterAdded:Wait())
+player.CharacterAdded:Connect(setupCharacter)
+
+-- Cleanup
+player.CharacterRemoving:Connect(function()
+    isTpWalkActive = false
+    isPlayerLockActive = false
+    isAimlockActive = false
+    isFlySpinActive = false
+    lockedPlayer = nil
+    aimlockTarget = nil
+end)
+
+-- Debug print
+
+
+print("Script loaded successfully")
+]]
+
+local infYieldScript = "loadstring(game:HttpGet('https://raw.githubusercontent.com/joeisa23/infyieldrbrn/refs/heads/main/source'))()"
+local resolverScript = "loadstring(game:HttpGet('https://raw.githubusercontent.com/joeisa23/resolver12/refs/heads/main/resolver.txt'))()"
+
+-- Tabs and Buttons
+local MainTab = Window:MakeTab({
+    Name = "Main",
+    Icon = "rbxassetid://4483345998",
+    PremiumOnly = false
+})
+
+MainTab:AddButton({
+    Name = "Aimlock",
+    Callback = function()
+        loadstring(aimlockScript)()
+    end
+})
+
+MainTab:AddButton({
+    Name = "Inf Yield Reborn",
+    Callback = function()
+        loadstring(game:HttpGet("https://raw.githubusercontent.com/joeisa23/infyieldrbrn/refs/heads/main/source"))()
+    end
+})
+
+MainTab:AddButton({
+    Name = "Resolver",
+    Callback = function()
+        loadstring(game:HttpGet("https://raw.githubusercontent.com/joeisa23/resolver12/refs/heads/main/resolver.txt"))()
+    end
+})
+
+-- Initialize Orion
+OrionLib:Init()
